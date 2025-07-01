@@ -1,0 +1,79 @@
+from AlgorithmImports import *
+import numpy as np
+
+class SharpeOptimisedQQQ(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2023, 1, 1)
+        self.SetEndDate(2024, 1, 1)
+        self.SetCash(100000)
+
+        self.symbol = self.AddEquity("QQQ", Resolution.Daily).Symbol
+        self.SetWarmUp(50)  # Warm up for max window
+
+        # Optimised parameters
+        self.z_window = 10
+        self.sma_window = 50
+        self.z_entry_threshold = -1.0
+        self.sma_tolerance = 0.98
+
+        self.price_history = RollingWindow[float](self.z_window)
+        self.sma_history = RollingWindow[float](self.sma_window)
+        self.daily_returns = []
+
+        self.last_price = None
+
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.BeforeMarketClose(self.symbol, 10), self.CheckEntry)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.AfterMarketOpen(self.symbol, 10), self.CheckExit)
+
+        self.Debug(f"Strategy initialized with Z={self.z_entry_threshold}, Z_win={self.z_window}, SMA={self.sma_window}, Tol={self.sma_tolerance}")
+
+    def OnData(self, data):
+        if not data.ContainsKey(self.symbol) or not data[self.symbol]:
+            return
+
+        price = float(data[self.symbol].Close)
+        self.price_history.Add(price)
+        self.sma_history.Add(price)
+
+        if self.last_price is not None:
+            daily_return = (price / self.last_price) - 1
+            self.daily_returns.append(daily_return)
+        self.last_price = price
+
+    def CheckEntry(self):
+        if not self.price_history.IsReady or not self.sma_history.IsReady:
+            return
+        if self.Portfolio.Invested:
+            return
+
+        price = self.price_history[0]
+        log_returns = np.diff(np.log([self.price_history[i] for i in range(self.z_window)][::-1]))
+        z = (log_returns[-1] - np.mean(log_returns)) / np.std(log_returns) if np.std(log_returns) > 0 else 0
+        sma = np.mean([self.sma_history[i] for i in range(self.sma_window)][::-1])
+        entry = z < self.z_entry_threshold and price > self.sma_tolerance * sma
+
+        if entry:
+            self.SetHoldings(self.symbol, 1.0)
+            self.Debug(f"{self.Time.date()} ENTRY: Bought QQQ at {price:.2f}")
+
+    def CheckExit(self):
+        if self.Portfolio.Invested:
+            self.Liquidate(self.symbol)
+            self.Debug(f"{self.Time.date()} EXIT: Liquidated QQQ")
+
+    def OnEndOfAlgorithm(self):
+        self.Debug(f"Final Portfolio Value: {self.Portfolio.TotalPortfolioValue:.2f}")
+
+        n = len(self.daily_returns)
+        if n < 2:
+            self.Debug("Not enough return data to compute Sharpe Ratio.")
+            return
+
+        mean_return = np.mean(self.daily_returns)
+        std_return = np.std(self.daily_returns)
+
+        if std_return > 0:
+            sharpe = (mean_return / std_return) * np.sqrt(252)
+            self.Debug(f"Custom Sharpe Ratio: {sharpe:.4f} over {n} trading days")
+        else:
+            self.Debug("Standard deviation of returns is zero. Cannot compute Sharpe.")
