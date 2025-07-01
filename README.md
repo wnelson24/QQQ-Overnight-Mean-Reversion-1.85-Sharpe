@@ -1,0 +1,1 @@
+# QQQ-Overnight-Mean-Reversion-1.85-Sharpe
